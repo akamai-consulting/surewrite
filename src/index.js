@@ -1,6 +1,7 @@
 
 import { jenkinsHash } from "./jenkins.js";
 import { signRequest } from "./signing.js";
+import { get as getVariable } from "@spinframework/spin-variables";
 import {
   POOL_SIZE,
   BUCKET_PREFIX,
@@ -26,8 +27,8 @@ function generateRequestId() {
  */
 function getCredentials() {
   return {
-    accessKeyId: Spin.variables.get("s3_access_key_id"),
-    secretAccessKey: Spin.variables.get("s3_secret_access_key"),
+    accessKeyId: getVariable("s3_access_key_id"),
+    secretAccessKey: getVariable("s3_secret_access_key"),
   };
 }
 
@@ -37,7 +38,7 @@ function getCredentials() {
  * "fetch" — function pulls the object from a configured origin.
  */
 function getIngestMode() {
-  const mode = (Spin.variables.get("ingest_mode") || "relay").toLowerCase();
+  const mode = (getVariable("ingest_mode") || "relay").toLowerCase();
   return mode === "fetch" ? "fetch" : "relay";
 }
 
@@ -45,7 +46,7 @@ function getIngestMode() {
  * Fetch object content from the configured origin.
  */
 async function fetchFromOrigin(rid, objectPath) {
-  const origin = Spin.variables.get("origin_hostname");
+  const origin = getVariable("origin_hostname");
   if (!origin) {
     throw new Error("origin_hostname is not configured");
   }
@@ -164,7 +165,7 @@ async function handle(request) {
 
   // Verify Bearer token (injected by the CDN layer)
   const authHeader = request.headers.get("authorization") || "";
-  const expectedToken = Spin.variables.get("auth_token");
+  const expectedToken = getVariable("auth_token");
   if (!authHeader.startsWith("Bearer ") || authHeader.slice(7) !== expectedToken) {
     console.error(`[${rid}][handle] unauthorized request`);
     return new Response("Unauthorized", { status: 401 });

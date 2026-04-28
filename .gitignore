@@ -5,3 +5,4 @@ target
 build/
 claude.md
 .vscode/
+.spin-aka/

@@ -3,7 +3,7 @@
  * Shard topology, bucket pool, and routing rules for the 2026 Brazilian Election.
  */
 
-export const POOL_SIZE = 10;
+export const POOL_SIZE = 3;
 export const BUCKET_PREFIX = "surewrite";
 
 // Ring Topology: Primary + Failover per shard
