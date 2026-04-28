@@ -213,7 +213,7 @@ async function handle(request) {
   // 2. Extract filename and compute bucket index via Jenkins hash
   const filename = extractFilename(cleanPath);
   const hash = jenkinsHash(filename);
-  const bucketIndex = hash % POOL_SIZE;
+  const bucketIndex = (hash % POOL_SIZE) + 1;
 
   const mode = getIngestMode();
   console.log(`[${rid}][handle] mode=${mode} path=${cleanPath} file=${filename} hash=${hash} shard=${shardKey} bucket=${bucketIndex}`);
