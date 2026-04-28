@@ -171,35 +171,29 @@ async function handle(request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  // Only accept POST or PUT from TSE backend
-  if (request.method !== "POST" && request.method !== "PUT") {
-    console.error(`[${rid}][handle] rejected method: ${request.method}`);
+  // Determine allowed methods based on ingest mode
+  const mode = getIngestMode();
+  const allowedMethods = mode === "fetch"
+    ? ["GET"]
+    : ["POST"];
+
+  if (!allowedMethods.includes(request.method)) {
+    console.error(`[${rid}][handle] rejected method: ${request.method} (mode=${mode})`);
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  // Guard against oversized payloads
-  const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-  if (contentLength > MAX_BODY_SIZE) {
-    console.error(`[${rid}][handle] payload too large: ${contentLength} bytes`);
-    return new Response("Payload Too Large", { status: 413 });
+  // Guard against oversized payloads (relay mode only)
+  if (mode !== "fetch") {
+    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > MAX_BODY_SIZE) {
+      console.error(`[${rid}][handle] payload too large: ${contentLength} bytes`);
+      return new Response("Payload Too Large", { status: 413 });
+    }
   }
 
-  let payload;
-  try {
-    payload = await request.json();
-  } catch {
-    console.error(`[${rid}][handle] failed to parse JSON body`);
-    return new Response("Invalid JSON body", { status: 400 });
-  }
-
-  const requestPath = payload.path;
-  if (!requestPath || typeof requestPath !== "string") {
-    console.error(`[${rid}][handle] missing "path" in request body`);
-    return new Response('Missing "path" in request body', { status: 400 });
-  }
-
-  // Strip query strings from the path
-  const cleanPath = requestPath.split("?")[0];
+  // Object key comes from the URL path
+  const url = new URL(request.url);
+  const cleanPath = url.pathname.split("?")[0];
 
   // Validate the object key to prevent path traversal
   if (!cleanPath.startsWith(ALLOWED_PATH_PREFIX) || cleanPath.includes("..")) {
@@ -215,12 +209,12 @@ async function handle(request) {
   const hash = jenkinsHash(filename);
   const bucketIndex = (hash % POOL_SIZE) + 1;
 
-  const mode = getIngestMode();
   console.log(`[${rid}][handle] mode=${mode} path=${cleanPath} file=${filename} hash=${hash} shard=${shardKey} bucket=${bucketIndex}`);
 
   // 3. Resolve the object body based on ingest mode
   let objectBody;
   if (mode === "fetch") {
+    // Fetch mode: pull content from origin using the URL path
     try {
       objectBody = await fetchFromOrigin(rid, cleanPath);
     } catch (err) {
@@ -231,7 +225,17 @@ async function handle(request) {
       });
     }
   } else {
-    objectBody = JSON.stringify(payload);
+    // Relay mode: POST body IS the election results data
+    try {
+      objectBody = await request.text();
+    } catch {
+      console.error(`[${rid}][handle] failed to read request body`);
+      return new Response("Bad Request", { status: 400 });
+    }
+    if (!objectBody) {
+      console.error(`[${rid}][handle] empty body`);
+      return new Response("Empty body", { status: 400 });
+    }
   }
 
   // 4. Tolerant dual-write
