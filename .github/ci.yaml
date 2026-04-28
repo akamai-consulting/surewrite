@@ -1,0 +1,47 @@
+name: "CI"
+on:
+  push:
+    branches:
+      - "main"
+    paths-ignore:
+      - "README.md"
+      - ".gitignore"
+      - ".github/workflows/ci.yaml"
+env:
+  NODE_VERSION: "24"
+jobs:
+  spin:
+    runs-on: "ubuntu-latest"
+    name: Build and Test Spin App
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "${{ env.NODE_VERSION }}"
+
+      - name: Install Spin
+        uses: fermyon/actions/spin/setup@v1
+        with:
+          plugins: js2wasm,aka
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build SureWrite
+        run: spin build
+        working-directory: .
+
+      - name: Login to Fermyon Wasm Functions
+        run: spin aka login --token ${{ secrets.AKA_FUNC_PAT }}
+      - name: Deploy to Fermyon Wasm Functions
+        run: >-
+          spin aka deploy
+          --app-id xxx
+          --no-confirm
+          --variable s3_access_key_id=${{ secrets.S3_ACCESS_KEY_ID }}
+          --variable s3_secret_access_key=${{ secrets.S3_SECRET_ACCESS_KEY }}
+          --variable auth_token=${{ secrets.AUTH_TOKEN }}
+          --variable ingest_mode=${{ vars.INGEST_MODE }}
+          --variable origin_hostname=${{ vars.ORIGIN_HOSTNAME }}

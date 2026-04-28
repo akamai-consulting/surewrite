@@ -1,0 +1,25 @@
+{
+  "name": "sure-write",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "node build.mjs && mkdirp dist && j2w -i build/bundle.js --initLocation http://sure-write.localhost -o dist/sure-write.wasm",
+    "build:debug": "node build.mjs && mkdirp dist && j2w -d -i build/bundle.js --initLocation http://sure-write.localhost -o dist/sure-write.wasm",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "esbuild": "^0.25.8",
+    "mkdirp": "^3.0.1"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@smithy/signature-v4": "^5.3.14",
+    "@spinframework/build-tools": "^1.0.4",
+    "@spinframework/wasi-http-proxy": "^1.0.0",
+    "buffer": "^6.0.3"
+  }
+}

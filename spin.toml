@@ -1,0 +1,39 @@
+spin_manifest_version = 2
+
+[application]
+authors = ["Josh Hicks <johicks@akamai.com>"]
+description = ""
+name = "SureWrite"
+version = "0.1.0"
+
+[variables]
+s3_access_key_id = { required = true }
+s3_secret_access_key = { required = true, secret = true }
+auth_token = { required = true, secret = true }
+ingest_mode = { default = "relay" }          # "relay" = data in POST body, "fetch" = pull from origin
+origin_hostname = { default = "" }           # required when ingest_mode = "fetch"
+
+[[trigger.http]]
+route = "/..."
+component = "sure-write"
+
+[component.sure-write]
+source = "dist/sure-write.wasm"
+exclude_files = ["**/node_modules"]
+allowed_outbound_hosts = [
+    # "tcp://127.0.0.1:*", # Uncomment this line to while using the StarlingMonkey Debugger
+    "https://*.us-iad-10.linodeobjects.com",
+    "https://*.us-ord-10.linodeobjects.com",
+    "https://*.us-lax-4.linodeobjects.com",
+    "https://*.tse.jus.br",
+]
+[component.sure-write.build]
+command = ["npm install", "npm run build"]
+watch = ["src/**/*.js"]
+
+[component.sure-write.variables]
+s3_access_key_id = "{{ s3_access_key_id }}"
+s3_secret_access_key = "{{ s3_secret_access_key }}"
+auth_token = "{{ auth_token }}"
+ingest_mode = "{{ ingest_mode }}"
+origin_hostname = "{{ origin_hostname }}"
