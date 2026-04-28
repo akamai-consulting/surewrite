@@ -23,11 +23,11 @@ bucket_index = JenkinsHash(filename) % 10
 
 Each request is written to two regions in parallel (tolerant dual-write):
 
-| Shard | States | Primary | Failover |
-|-------|--------|---------|----------|
-| A | DF, ES, GO, MG, MS, MT, PR, RJ, RS, SC, SP | Washington, DC | Chicago, IL |
-| B | AL, BA, CE, MA, PB, PE, PI, RN, SE | Chicago, IL | Los Angeles, CA |
-| C | AC, AM, AP, PA, RO, RR, TO | Los Angeles, CA | Washington, DC |
+| Shard | States | ~Voters | Primary | Failover |
+|-------|--------|---------|---------|----------|
+| A | SP, PE, AM, PI, DF, SE, RR | 50.3M | Washington, DC | Chicago, IL |
+| B | MG, BA, PR, CE, PB, MT, MS, RO, AC | 50.2M | Chicago, IL | Los Angeles, CA |
+| C | RJ, RS, PA, SC, MA, GO, ES, RN, AL, TO, AP | 50.8M | Los Angeles, CA | Washington, DC |
 
 A `200 OK` is returned if **at least one** write succeeds. Both writes are always awaited to ensure replication completes before the function exits.
 

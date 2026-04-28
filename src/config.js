@@ -22,12 +22,12 @@ export const SHARDS = {
   },
 };
 
-// Shard routing rules — evaluated in order, first match wins.
-// Pattern is tested against the full request path.
+// Shard routing rules — balanced by electorate (~50M voters per shard).
+// Evaluated in order, first match wins. Pattern tested against the full request path.
 export const SHARD_RULES = [
-  { pattern: /\/dados\/(ac|am|ap|pa|ro|rr|to)\//i,                       shard: "C" }, // North
-  { pattern: /\/dados\/(al|ba|ce|ma|pb|pe|pi|rn|se)\//i,                 shard: "B" }, // Northeast
-  { pattern: /\/dados\/(df|es|go|mg|ms|mt|pr|rj|rs|sc|sp)\//i,           shard: "A" }, // South/Southeast/Central-West
+  { pattern: /\/dados\/(sp|pe|am|pi|df|se|rr)\//i,                       shard: "A" }, // ~50.3M voters
+  { pattern: /\/dados\/(mg|ba|pr|ce|pb|mt|ms|ro|ac)\//i,                 shard: "B" }, // ~50.2M voters
+  { pattern: /\/dados\/(rj|rs|pa|sc|ma|go|es|rn|al|to|ap)\//i,          shard: "C" }, // ~50.8M voters
 ];
 
 // Default shard when no rule matches
