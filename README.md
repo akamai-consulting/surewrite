@@ -13,10 +13,10 @@ TSE Backend → CDN (Token Auth 2.0) → SureWrite WASM Function → Linode E3 O
 
 ### Sharding
 
-Writes are micro-sharded across a pool of 10 buckets per region using a **Jenkins One-at-a-Time hash** of the filename. This distributes load to bypass per-bucket RPS limits while keeping routing deterministic.
+Writes are micro-sharded across a configurable pool of buckets per region using a **Jenkins One-at-a-Time hash** of the filename. This distributes load to bypass per-bucket RPS limits while keeping routing deterministic. Bucket indices are 1-based.
 
 ```
-bucket_index = JenkinsHash(filename) % 10
+bucket_index = (JenkinsHash(filename) % POOL_SIZE) + 1
 ```
 
 ### Replication (Ring Topology)
@@ -33,24 +33,32 @@ A `200 OK` is returned if **at least one** write succeeds. Both writes are alway
 
 ## Ingest Modes
 
-Controlled by the `ingest_mode` variable:
+Controlled by the `ingest_mode` variable. The mode also determines which HTTP methods are accepted, reducing the attack surface.
 
-| Mode | Behavior |
-|------|----------|
-| `relay` (default) | Object data is included in the POST body |
-| `fetch` | POST body contains only the `path`; the function pulls the object from `origin_hostname` |
+| Mode | HTTP Method | Behavior |
+|------|-------------|----------|
+| `relay` (default) | `POST` | The request body is the raw election results data. Written directly to S3. |
+| `fetch` | `GET` | No body required. The function pulls the object from `origin_hostname` using the URL path. |
+
+In both modes, the **URL path** is the S3 object key (e.g. `/oficial/ele2026/620/dados/sp/sp71072-c0011-e000620-u.json`).
 
 ## Request Format
 
+### Relay mode (POST)
+
 ```
-POST / HTTP/1.1
+POST /oficial/ele2026/620/dados/sp/sp71072-c0011-e000620-u.json HTTP/1.1
 Authorization: Bearer <auth_token>
 Content-Type: application/json
 
-{
-  "path": "/oficial/ele2024/620/dados/pb/pb20516-c0011-e000620-u.json",
-  ...
-}
+{"votos": [{"candidato": "001", "total": 15234}]}
+```
+
+### Fetch mode (GET)
+
+```
+GET /oficial/ele2026/620/dados/sp/sp71072-c0011-e000620-u.json HTTP/1.1
+Authorization: Bearer <auth_token>
 ```
 
 ### Response
@@ -69,9 +77,10 @@ Content-Type: application/json
 ## Security
 
 - **Bearer token authentication** — Every request must include an `Authorization: Bearer <token>` header. The CDN layer validates the POSTer via Token Auth 2.0 and injects the token before forwarding.
+- **Method restriction** — Relay mode only accepts `POST`; fetch mode only accepts `GET`. All other methods return `405`.
 - **Path validation** — Object keys must start with `/oficial/` and cannot contain `..`.
-- **Body size limit** — Requests over 5 MB are rejected with `413`.
-- **S3 Signature V4** — All PUTs to Linode E3 are signed using `@smithy/signature-v4`.
+- **Body size limit** — Relay mode requests over 5 MB are rejected with `413`.
+- **S3 Signature V4** — All PUTs to Linode Object Storage are signed using `@smithy/signature-v4`.
 
 ## Configuration
 

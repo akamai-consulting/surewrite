@@ -12,6 +12,8 @@ import {
 
 const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
 const ALLOWED_PATH_PREFIX = "/oficial/";
+const S3_TIMEOUT_MS = 5_000;     // 5s per S3 PUT
+const ORIGIN_TIMEOUT_MS = 10_000; // 10s for origin fetch
 
 /**
  * Generate a short random request ID for log correlation.
@@ -52,7 +54,7 @@ async function fetchFromOrigin(rid, objectPath) {
   }
   const url = `https://${origin}${objectPath}`;
   console.log(`[${rid}][origin] fetching ${url}`);
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(ORIGIN_TIMEOUT_MS) });
   if (!res.ok) {
     throw new Error(`origin responded HTTP ${res.status} for ${url}`);
   }
@@ -95,6 +97,7 @@ async function signedPut(host, region, bucketIndex, objectPath, body, credential
     method: "PUT",
     headers: signed.headers,
     body,
+    signal: AbortSignal.timeout(S3_TIMEOUT_MS),
   });
 }
 
