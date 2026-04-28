@@ -1,39 +1,153 @@
-# `http-js` Template
+# SureWrite
 
-A starter template for building JavaScript HTTP applications with Spin.
+High-velocity election results ingest function for the 2026 Brazilian Election. Runs on Akamai WASM Functions (Spin) and replicates election result JSON files across geographically distributed Linode E3 Object Storage buckets.
 
-## Getting Started
+## Architecture
 
-Build the App
+```
+TSE Backend → CDN (Token Auth 2.0) → SureWrite WASM Function → Linode E3 Object Storage
+                                          │
+                                          ├── Primary region   (signed PUT)
+                                          └── Failover region  (signed PUT)
+```
 
-```bash
+### Sharding
+
+Writes are micro-sharded across a pool of 10 buckets per region using a **Jenkins One-at-a-Time hash** of the filename. This distributes load to bypass per-bucket RPS limits while keeping routing deterministic.
+
+```
+bucket_index = JenkinsHash(filename) % 10
+```
+
+### Replication (Ring Topology)
+
+Each request is written to two regions in parallel (tolerant dual-write):
+
+| Shard | States | Primary | Failover |
+|-------|--------|---------|----------|
+| A | DF, ES, GO, MG, MS, MT, PR, RJ, RS, SC, SP | Washington, DC | Chicago, IL |
+| B | AL, BA, CE, MA, PB, PE, PI, RN, SE | Chicago, IL | Los Angeles, CA |
+| C | AC, AM, AP, PA, RO, RR, TO | Los Angeles, CA | Washington, DC |
+
+A `200 OK` is returned if **at least one** write succeeds. Both writes are always awaited to ensure replication completes before the function exits.
+
+## Ingest Modes
+
+Controlled by the `ingest_mode` variable:
+
+| Mode | Behavior |
+|------|----------|
+| `relay` (default) | Object data is included in the POST body |
+| `fetch` | POST body contains only the `path`; the function pulls the object from `origin_hostname` |
+
+## Request Format
+
+```
+POST / HTTP/1.1
+Authorization: Bearer <auth_token>
+Content-Type: application/json
+
+{
+  "path": "/oficial/ele2024/620/dados/pb/pb20516-c0011-e000620-u.json",
+  ...
+}
+```
+
+### Response
+
+```json
+{
+  "status": "ok",
+  "request_id": "a1b2c3d4e5f6",
+  "shard": "B",
+  "bucket": "surewrite-7",
+  "primary_written": true,
+  "failover_written": true
+}
+```
+
+## Security
+
+- **Bearer token authentication** — Every request must include an `Authorization: Bearer <token>` header. The CDN layer validates the POSTer via Token Auth 2.0 and injects the token before forwarding.
+- **Path validation** — Object keys must start with `/oficial/` and cannot contain `..`.
+- **Body size limit** — Requests over 5 MB are rejected with `413`.
+- **S3 Signature V4** — All PUTs to Linode E3 are signed using `@smithy/signature-v4`.
+
+## Configuration
+
+All configuration is via Spin variables, set at deploy time or through environment variables:
+
+| Variable | Required | Secret | Description |
+|----------|----------|--------|-------------|
+| `s3_access_key_id` | yes | no | Linode Object Storage access key |
+| `s3_secret_access_key` | yes | yes | Linode Object Storage secret key |
+| `auth_token` | yes | yes | Bearer token for request authentication |
+| `ingest_mode` | no | no | `relay` (default) or `fetch` |
+| `origin_hostname` | no | no | Origin hostname for `fetch` mode (e.g. `resultados.tse.jus.br`) |
+
+### Environment Variables (local dev)
+
+```sh
+export SPIN_VARIABLE_S3_ACCESS_KEY_ID="..."
+export SPIN_VARIABLE_S3_SECRET_ACCESS_KEY="..."
+export SPIN_VARIABLE_AUTH_TOKEN="..."
+export SPIN_VARIABLE_INGEST_MODE="relay"
+export SPIN_VARIABLE_ORIGIN_HOSTNAME=""
+```
+
+## Development
+
+### Prerequisites
+
+- Node.js 24+
+- [Spin CLI](https://developer.fermyon.com/spin/install) 3.5+
+
+### Build
+
+```sh
+npm install
 spin build
 ```
 
-## Run the App 
+### Run locally
 
-```bash
+```sh
 spin up
 ```
 
-## Using Spin Interfaces
+### Deploy
 
-To use additional Spin interfaces, install the corresponding packages:
+```sh
+spin aka login --token <PAT>
+spin aka deploy --app-id <APP_ID> --no-confirm \
+  --variable s3_access_key_id=<KEY> \
+  --variable s3_secret_access_key=<SECRET> \
+  --variable auth_token=<TOKEN> \
+  --variable ingest_mode=relay \
+  --variable origin_hostname=""
+```
 
-| Interface     | Package                         |
-|---------------|---------------------------------|
-| Key-Value     | `@spinframework/spin-kv`        |
-| LLM           | `@spinframework/spin-llm`       |
-| MQTT          | `@spinframework/spin-mqtt`      |
-| MySQL         | `@spinframework/spin-mysql`     |
-| PostgreSQL    | `@spinframework/spin-postgres`  |
-| Redis         | `@spinframework/spin-redis`     |
-| SQLite        | `@spinframework/spin-sqlite`    |
-| Variables     | `@spinframework/spin-variables` |
+## Debugging
 
-## Using the StarlingMonkey Debugger for VS Code
+1. Install the [StarlingMonkey Debugger](https://marketplace.visualstudio.com/items?itemName=BytecodeAlliance.starlingmonkey-debugger) extension.
+2. Build with `npm run build:debug`.
+3. Uncomment `tcp://127.0.0.1:*` in `allowed_outbound_hosts` in `spin.toml`.
+4. Start the debugger in VS Code (restart for each HTTP call).
 
-1. First install the [StarlingMonkey Debugger](https://marketplace.visualstudio.com/items?itemName=BytecodeAlliance.starlingmonkey-debugger) extension.
-2. Build the component using the debug command `npm run build:debug`.
-3. Uncomment `tcp://127.0.0.1:*` in the `allowed_outbound_hosts` field in the `spin.toml`.
-4. Start the debugger in VS Code which should start Spin and attach the debugger. The debugger needs to be restarted for each http call.
+## Project Structure
+
+```
+src/
+  index.js      Main request handler
+  config.js     Shard topology, routing rules, constants
+  jenkins.js    Jenkins One-at-a-Time hash
+  signing.js    S3 Signature V4 wrapper
+spin.toml       Spin application manifest
+build.mjs       esbuild configuration
+.github/
+  ci.yaml       CI/CD pipeline
+```
+
+## CI/CD
+
+Pushes to `main` trigger the GitHub Actions workflow in `.github/ci.yaml`, which builds the WASM component and deploys to Akamai WASM Functions. Secrets (`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `AUTH_TOKEN`) and variables (`INGEST_MODE`, `ORIGIN_HOSTNAME`) are configured in the repository settings.
