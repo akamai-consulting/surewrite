@@ -102,21 +102,40 @@ async function signedPut(host, region, bucketIndex, objectPath, body, credential
 }
 
 /**
+ * Random jittered delay (50–300ms) to avoid thundering-herd retries.
+ */
+function jitteredDelay() {
+  const ms = 50 + Math.floor(Math.random() * 250);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Wrap a fetch so it resolves with a tagged result object instead of rejecting.
  * A non-2xx response is treated as a failure (ok: false).
+ * Retries once with a randomized delay on failure or timeout.
  */
-async function taggedFetch(rid, label, fetchPromise) {
-  try {
-    const res = await fetchPromise;
-    if (res.ok) {
-      console.log(`[${rid}][dualWrite] ${label} succeeded HTTP ${res.status}`);
-      return { ok: true, label, status: res.status };
+async function taggedFetch(rid, label, makeFetch) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await makeFetch();
+      if (res.ok) {
+        console.log(`[${rid}][dualWrite] ${label} succeeded HTTP ${res.status} (attempt ${attempt})`);
+        return { ok: true, label, status: res.status };
+      }
+      console.error(`[${rid}][dualWrite] ${label} failed HTTP ${res.status} (attempt ${attempt})`);
+      if (attempt < 2) {
+        await jitteredDelay();
+        continue;
+      }
+      return { ok: false, label, status: res.status };
+    } catch (err) {
+      console.error(`[${rid}][dualWrite] ${label} rejected: ${err} (attempt ${attempt})`);
+      if (attempt < 2) {
+        await jitteredDelay();
+        continue;
+      }
+      return { ok: false, label, error: String(err) };
     }
-    console.error(`[${rid}][dualWrite] ${label} failed HTTP ${res.status}`);
-    return { ok: false, label, status: res.status };
-  } catch (err) {
-    console.error(`[${rid}][dualWrite] ${label} rejected: ${err}`);
-    return { ok: false, label, error: String(err) };
   }
 }
 
@@ -136,12 +155,12 @@ async function dualWrite(rid, shard, bucketIndex, objectPath, body) {
     taggedFetch(
       rid,
       "primary",
-      signedPut(primary.host, primary.region, bucketIndex, objectPath, body, credentials)
+      () => signedPut(primary.host, primary.region, bucketIndex, objectPath, body, credentials)
     ),
     taggedFetch(
       rid,
       "failover",
-      signedPut(failover.host, failover.region, bucketIndex, objectPath, body, credentials)
+      () => signedPut(failover.host, failover.region, bucketIndex, objectPath, body, credentials)
     ),
   ]);
 
