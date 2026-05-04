@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SureWrite API Documentation</title>
+    <meta name="description" content="SureWrite — election results ingest API for the 2026 Brazilian Election." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/spinframework/spin/main/docs/static/image/logo.png" />
+    <style>
+      body { margin: 0; padding: 0; background: #0f1117; }
+
+      /* Redoc styled-components generates unpredictable class names, so target
+         structural elements directly to fix dark-theme contrast issues. */
+
+      /* Base: all text in the container is light (dark background) */
+      #redoc-container { color: #d0d5e8; }
+
+      /* Heading elements don't always inherit color — force them light */
+      #redoc-container h1,
+      #redoc-container h2,
+      #redoc-container h3,
+      #redoc-container h4,
+      #redoc-container h5,
+      #redoc-container h6 { color: #d0d5e8; }
+
+      /* Unify all table backgrounds to dark so light text works everywhere */
+      #redoc-container table,
+      #redoc-container table td,
+      #redoc-container table th { background-color: #1a1d2b !important; color: #d0d5e8 !important; border-color: #2a2d3a !important; }
+    </style>
+  </head>
+  <body>
+    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+    <div id="redoc-container"></div>
+    <script>
+      Redoc.init(
+        "./openapi.yaml",
+        {
+          scrollYOffset: 0,
+          hideDownloadButton: false,
+          disableSearch: false,
+          expandResponses: "200",
+          theme: {
+            colors: {
+              primary: { main: "#009c3b" },
+              success: { main: "#009c3b" },
+              error:   { main: "#e74c3c" },
+              warning: { main: "#f39c12" },
+              text: {
+                primary:   "#e8eaf0",
+                secondary: "#b0bac8"
+              },
+              border: { light: "#2a2d3a", dark: "#3a3f52" },
+              responses: {
+                success: { color: "#4cda7f", backgroundColor: "#0a2218" },
+                error:   { color: "#f07060", backgroundColor: "#2a0e0e" },
+                redirect:{ color: "#f5c04a", backgroundColor: "#2a1e07" },
+                info:    { color: "#60b4f0", backgroundColor: "#0a1a2a" }
+              },
+              http: {
+                get:    "#2196f3",
+                post:   "#009c3b",
+                put:    "#f39c12",
+                delete: "#e74c3c"
+              }
+            },
+            typography: {
+              fontSize:       "15px",
+              lineHeight:     "1.6",
+              fontFamily:     "Inter, system-ui, sans-serif",
+              headings: {
+                fontFamily:   "Inter, system-ui, sans-serif",
+                fontWeight:   "600"
+              },
+              code: {
+                fontSize:     "13px",
+                fontFamily:   "'JetBrains Mono', 'Fira Code', monospace",
+                color:        "#ffdf00",
+                backgroundColor: "#1a1d2b",
+                wrap:         true
+              },
+              links: { color: "#4cda7f" }
+            },
+            sidebar: {
+              width:           "280px",
+              backgroundColor: "#0a0d14",
+              textColor:       "#9ba3b2",
+              activeTextColor: "#e8eaf0",
+              groupItems: { activeBackgroundColor: "#12172b" },
+              level1Items: { activeBackgroundColor: "#0f152a" }
+            },
+            rightPanel: {
+              backgroundColor: "#0a0d14",
+              textColor:       "#e8eaf0"
+            },
+            codeBlock: {
+              backgroundColor: "#1a1d2b"
+            },
+            logo: {
+              maxHeight: "48px",
+              maxWidth:  "200px",
+              gutter:    "16px"
+            }
+          }
+        },
+        document.getElementById("redoc-container")
+      );
+    </script>
+  </body>
+</html>

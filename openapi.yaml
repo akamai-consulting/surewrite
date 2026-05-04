@@ -1,0 +1,393 @@
+openapi: "3.1.0"
+
+info:
+  title: SureWrite Ingest API
+  version: "1.0.0"
+  description: |
+    SureWrite accepts election results objects and durably stores them with
+    geographic redundancy. A `200 OK` response guarantees the object has been
+    persisted to at least one region.
+
+    ## Authentication
+
+    Every request must carry an **Akamai Token Auth 2.0** token. Tokens are
+    HMAC-SHA256–signed and have the following structure:
+
+    ```
+    st=<unix_start>~exp=<unix_expiry>~acl=<url_acl>~hmac=<hex_signature>
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `st` | Token start time (Unix epoch seconds). |
+    | `exp` | Token expiry (Unix epoch seconds). Keep intervals short (≤ 300 s). |
+    | `acl` | URL ACL pattern (percent-encoded), e.g. `/oficial/*`. |
+    | `hmac` | HMAC-SHA256 of the token fields, keyed with your shared secret. |
+
+    Tokens can be delivered as a query parameter (`?__token__=<token>`) or via
+    the `Akamai-Token` request header — confirm the method with your account team.
+
+    **Python**
+    ```python
+    from akamai.edgeauth import EdgeAuth
+
+    ea = EdgeAuth(key="YOUR_SHARED_SECRET", algorithm="sha256", window_seconds=300)
+    token = ea.generate_acl_token("/oficial/*")
+    # append ?__token__=<token> to the request URL
+    ```
+
+    **Node.js**
+    ```js
+    import { AkamaiEdgeAuth } from "@akamai/edgeauth";
+
+    const ea = new AkamaiEdgeAuth({ key: "YOUR_SHARED_SECRET", windowSeconds: 300 });
+    const token = ea.generateACLToken("/oficial/*");
+    // append ?__token__=<token> to the request URL
+    ```
+
+    Always generate tokens immediately before use — do not cache or reuse them.
+
+    ## Ingest Modes
+
+    Two modes are available, selected by your account configuration:
+
+    | Mode | HTTP Method | Body |
+    |------|-------------|------|
+    | `relay` (default) | `POST` | Election results JSON in the request body |
+    | `fetch` | `GET` | No body — the service fetches the object from the configured origin |
+
+    ## Object Key Path
+
+    The URL path is the object key. Paths must:
+    - Start with `/oficial/`
+    - Not contain `..`
+
+    Example: `/oficial/ele2026/620/dados/sp/sp71072-c0011-e000620-u.json`
+
+servers:
+  - url: https://surewrite.akamai-sure-write.net
+    description: Production (Akamai WASM Functions — Spin)
+
+security:
+  - TokenAuth20: []
+
+paths:
+  /oficial/{objectKey}:
+    parameters:
+      - $ref: "#/components/parameters/objectKey"
+
+    post:
+      operationId: ingestRelay
+      summary: Ingest election results (relay mode)
+      description: |
+        Writes the request body directly to Linode Object Storage.
+        Only accepted when `ingest_mode` is `relay` (the default).
+
+        The `Content-Type` should be `application/json` for structured results data.
+        The body is stored as-is; SureWrite does not parse or validate the payload beyond
+        enforcing the 5 MB size limit.
+      tags:
+        - Ingest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ElectionResultsPayload"
+            examples:
+              singleSection:
+                summary: Single voting section result
+                value:
+                  votos:
+                    - candidato: "001"
+                      total: 15234
+                    - candidato: "045"
+                      total: 8901
+      responses:
+        "200":
+          $ref: "#/components/responses/IngestSuccess"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+    get:
+      operationId: ingestFetch
+      summary: Ingest election results (fetch mode)
+      description: |
+        Instructs SureWrite to pull the object from the configured origin
+        (`origin_hostname` Spin variable) and write it to object storage.
+        Only accepted when `ingest_mode` is `fetch`.
+
+        No request body is required. The function constructs the origin URL as
+        `https://{origin_hostname}{objectKey}` and fetches it with a 10-second timeout.
+      tags:
+        - Ingest
+      responses:
+        "200":
+          $ref: "#/components/responses/IngestSuccess"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+
+components:
+  parameters:
+    objectKey:
+      name: objectKey
+      in: path
+      required: true
+      description: |
+        The full S3 object key path, **relative to** `/oficial/`.
+        The complete URL path (including `/oficial/`) is used as the key in object storage.
+
+        Examples:
+        - `ele2026/620/dados/sp/sp71072-c0011-e000620-u.json`
+        - `ele2026/620/dados/rj/rj60011-c0001-e000620-u.json`
+
+        Constraints:
+        - Must NOT contain `..` (path traversal is rejected with `403`)
+        - Maximum effective full path: limited by URL length (practical limit ~2 KB)
+      schema:
+        type: string
+        pattern: "^(?!.*\\.\\.)[a-zA-Z0-9/_.-]+$"
+        example: "ele2026/620/dados/sp/sp71072-c0011-e000620-u.json"
+
+  schemas:
+    ElectionResultsPayload:
+      type: object
+      description: |
+        Arbitrary election results JSON. SureWrite treats the body as an opaque blob
+        and stores it without parsing. The structure shown is representative of
+        typical TSE output.
+      additionalProperties: true
+      example:
+        votos:
+          - candidato: "001"
+            total: 15234
+          - candidato: "045"
+            total: 8901
+
+    IngestSuccessResponse:
+      type: object
+      required:
+        - status
+        - request_id
+        - shard
+        - bucket
+        - primary_written
+        - failover_written
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+          description: Always `"ok"` on a successful response.
+          example: ok
+        request_id:
+          type: string
+          description: |
+            Opaque 12-character hex string for log correlation.
+            Include this value in any support or debugging request.
+          pattern: "^[0-9a-f]{12}$"
+          example: a1b2c3d4e5f6
+        shard:
+          type: string
+          enum:
+            - A
+            - B
+            - C
+          description: |
+            The shard selected for this write, derived from the state code in the URL path.
+            - **A** — SP, PE, AM, PI, DF, SE, RR (~50.3M voters)
+            - **B** — MG, BA, PR, CE, PB, MT, MS, RO, AC (~50.2M voters)
+            - **C** — RJ, RS, PA, SC, MA, GO, ES, RN, AL, TO, AP (~50.8M voters)
+          example: A
+        bucket:
+          type: string
+          description: |
+            The specific bucket within the pool that received this write, e.g. `surewrite-2`.
+            Bucket assignment is deterministic: `(JenkinsHash(filename) % POOL_SIZE) + 1`.
+          pattern: "^surewrite-[1-9][0-9]*$"
+          example: surewrite-2
+        primary_written:
+          type: boolean
+          description: Whether the write to the primary region succeeded.
+          example: true
+        failover_written:
+          type: boolean
+          description: Whether the write to the failover region succeeded.
+          example: true
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error detail.
+          example: "Both writes failed — primary: HTTP 503, failover: HTTP 503"
+
+  responses:
+    IngestSuccess:
+      description: |
+        The object was ingested successfully. At least one region (primary or failover)
+        confirmed the write. Inspect `primary_written` and `failover_written` to determine
+        replication health.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IngestSuccessResponse"
+          example:
+            status: ok
+            request_id: a1b2c3d4e5f6
+            shard: A
+            bucket: surewrite-2
+            primary_written: true
+            failover_written: true
+
+    BadRequest:
+      description: |
+        The request body was empty or could not be read (relay mode only).
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "Empty body"
+
+    Unauthorized:
+      description: |
+        The `Authorization: Bearer` header was missing, malformed, or carried
+        an incorrect token. In normal operation, the CDN injects this header after
+        Token Auth 2.0 validation, so this error indicates a misconfigured CDN rule
+        or a direct (non-CDN) call without credentials.
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: Unauthorized
+
+    Forbidden:
+      description: |
+        The object key path does not begin with `/oficial/` or contains `..`.
+        This is a path-traversal guard.
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "Forbidden path"
+
+    MethodNotAllowed:
+      description: |
+        The HTTP method is not permitted for the active `ingest_mode`.
+        - `relay` mode only accepts `POST`
+        - `fetch` mode only accepts `GET`
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "Method Not Allowed"
+
+    PayloadTooLarge:
+      description: |
+        The `Content-Length` header indicates a body larger than 5 MB (5,242,880 bytes).
+        Split large batches into smaller per-object requests.
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "Payload Too Large"
+
+    BadGateway:
+      description: |
+        Both the primary and failover S3 writes failed (relay/fetch mode), or the
+        configured origin did not respond successfully (fetch mode).
+        The response body contains an `error` field with details.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            dualWriteFailed:
+              summary: Both S3 writes failed
+              value:
+                error: "Both writes failed — primary: HTTP 503, failover: HTTP 503"
+            originFailed:
+              summary: Origin fetch failed
+              value:
+                error: "origin responded HTTP 404 for https://resultados.tse.jus.br/oficial/..."
+
+  securitySchemes:
+    TokenAuth20:
+      type: apiKey
+      description: |
+        **Akamai Token Auth 2.0** — validated at the CDN edge before requests reach SureWrite.
+
+        Tokens are HMAC-SHA256–signed and have the following structure:
+
+        ```
+        st=<unix_start>~exp=<unix_expiry>~acl=<url_acl>~hmac=<hex_signature>
+        ```
+
+        | Field | Description |
+        |-------|-------------|
+        | `st` | Token start time (Unix epoch seconds). May be omitted; CDN will accept tokens that have not yet "started" within a grace window. |
+        | `exp` | Token expiry (Unix epoch seconds). **Required.** Strictly enforced. Keep intervals short (≤ 300 s recommended). |
+        | `acl` | URL ACL pattern (percent-encoded). Use `/oficial/*` to cover all ingest paths. |
+        | `hmac` | HMAC-SHA256 of the token fields, keyed with the shared secret provisioned by your Akamai account team. |
+
+        **Delivery method** — negotiate with your Akamai account team:
+
+        - **Query parameter** (default): append `?__token__=<token>` to the request URL.
+          > **Note:** `hdnts` is the query parameter name used by the Akamai Streaming Token Auth implementation. For standard web delivery, the default is `__token__`. Confirm the correct name with your Akamai account team if you have customized the property configuration.
+        - **Request header**: set `Akamai-Token: <token>`.
+
+        **Generating a token (Python)**:
+
+        ```python
+        from akamai.edgeauth import EdgeAuth
+
+        ea = EdgeAuth(
+            key="YOUR_SHARED_SECRET",
+            algorithm="sha256",
+            window_seconds=300,       # token valid for 5 minutes
+        )
+        token = ea.generate_acl_token("/oficial/*")
+        # Append to the URL: ?__token__=<token>
+        ```
+
+        **Generating a token (Node.js)**:
+
+        ```js
+        import EdgeGrid from "akamai-edgegrid";
+        import { AkamaiEdgeAuth } from "@akamai/edgeauth";
+
+        const ea = new AkamaiEdgeAuth({
+          key: "YOUR_SHARED_SECRET",
+          windowSeconds: 300,
+        });
+        const token = ea.generateACLToken("/oficial/*");
+        // Append to the URL: ?__token__=<token>
+        ```
+
+        **Token lifecycle**: tokens must be generated immediately before use. Do **not** cache
+        or reuse tokens across multiple requests; expiry is enforced to the second.
+      in: query
+      name: __token__
+
+tags:
+  - name: Ingest
+    description: Election results ingest operations

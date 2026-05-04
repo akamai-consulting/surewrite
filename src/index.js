@@ -185,12 +185,27 @@ async function handle(request) {
   const rid = generateRequestId();
   console.log(`[${rid}][handle] ${request.method} ${request.url}`);
 
+  // Silence browser favicon requests — no favicon is served by this application
+  const earlyUrl = new URL(request.url);
+  if (earlyUrl.pathname === "/favicon.ico") {
+    return new Response(null, { status: 204 });
+  }
+
   // Verify Bearer token (injected by the CDN layer)
   const authHeader = request.headers.get("authorization") || "";
   const expectedToken = getVariable("auth_token");
   if (!authHeader.startsWith("Bearer ") || authHeader.slice(7) !== expectedToken) {
     console.error(`[${rid}][handle] unauthorized request`);
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  // Proxy /docs/... to the internal fileserver component via service chaining.
+  // Auth is enforced above; the fileserver component is reached only via this handler.
+  const parsedUrl = new URL(request.url);
+  if (parsedUrl.pathname === "/docs" || parsedUrl.pathname.startsWith("/docs/")) {
+    const internalUrl = `http://docs.spin.internal${parsedUrl.pathname}${parsedUrl.search}`;
+    console.log(`[${rid}][docs] proxying to internal fileserver: ${parsedUrl.pathname}`);
+    return fetch(internalUrl);
   }
 
   // Determine allowed methods based on ingest mode

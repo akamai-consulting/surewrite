@@ -42,6 +42,17 @@ Controlled by the `ingest_mode` variable. The mode also determines which HTTP me
 
 In both modes, the **URL path** is the S3 object key (e.g. `/oficial/ele2026/620/dados/sp/sp71072-c0011-e000620-u.json`).
 
+## API Documentation
+
+Live interactive API documentation (Redoc) is served directly by the deployed application:
+
+| URL | Description |
+|-----|-------------|
+| `https://<hostname>/docs/` | Rendered Redoc API reference |
+| `https://<hostname>/docs/openapi.yaml` | Raw OpenAPI 3.1.0 spec |
+
+Access requires a valid Token Auth 2.0 token, the same as all other endpoints.
+
 ## Request Format
 
 ### Relay mode (POST)
@@ -151,6 +162,9 @@ src/
   config.js     Shard topology, routing rules, constants
   jenkins.js    Jenkins One-at-a-Time hash
   signing.js    S3 Signature V4 wrapper
+docs/
+  index.html    Redoc API documentation viewer (served at /docs/)
+openapi.yaml    OpenAPI 3.1.0 specification (served at /docs/openapi.yaml)
 spin.toml       Spin application manifest
 build.mjs       esbuild configuration
 .github/
