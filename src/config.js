@@ -9,7 +9,7 @@ export const BUCKET_PREFIX = "surewrite";
 // Ring Topology: Primary + Failover per shard
 export const SHARDS = {
   A: {
-    primary:  { host: "us-iad-1.linodeobjects.com", region: "us-iad-1" }, // Washington, DC
+    primary:  { host: "us-iad-18.linodeobjects.com", region: "us-iad-18" }, // Washington, DC
     failover: { host: "us-ord-10.linodeobjects.com", region: "us-ord-1" }, // Chicago, IL
   },
   B: {
@@ -18,7 +18,7 @@ export const SHARDS = {
   },
   C: {
     primary:  { host: "us-lax-4.linodeobjects.com",  region: "us-lax-1" }, // Los Angeles, CA
-    failover: { host: "us-iad-1.linodeobjects.com", region: "us-iad-1" }, // Washington, DC
+    failover: { host: "us-iad-18.linodeobjects.com", region: "us-iad-18" }, // Washington, DC
   },
 };
 
