@@ -14,7 +14,7 @@ ingest_mode = { default = "relay" }          # "relay" = data in POST body, "fet
 origin_hostname = { default = "" }           # required when ingest_mode = "fetch"
 
 [[trigger.http]]
-route = "/docs/..."
+route = { private = true }
 component = "docs"
 
 [component.docs]
