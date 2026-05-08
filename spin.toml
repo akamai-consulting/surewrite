@@ -34,7 +34,7 @@ exclude_files = ["**/node_modules"]
 allowed_outbound_hosts = [
     # "tcp://127.0.0.1:*", # Uncomment this line to while using the StarlingMonkey Debugger
     "http://docs.spin.internal",
-    "https://*.us-iad-1.linodeobjects.com",
+    "https://*.us-iad-18.linodeobjects.com",
     "https://*.us-ord-10.linodeobjects.com",
     "https://*.us-lax-4.linodeobjects.com",
     "https://*.tse.jus.br",
