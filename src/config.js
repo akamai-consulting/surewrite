@@ -10,10 +10,10 @@ export const BUCKET_PREFIX = "surewrite";
 export const SHARDS = {
   A: {
     primary:  { host: "us-iad-18.linodeobjects.com", region: "us-iad-18" }, // Washington, DC
-    failover: { host: "us-ord-10.linodeobjects.com", region: "us-ord-1" }, // Chicago, IL
+    failover: { host: "us-ord-10.linodeobjects.com", region: "us-ord-10" }, // Chicago, IL
   },
   B: {
-    primary:  { host: "us-ord-10.linodeobjects.com", region: "us-ord-1" }, // Chicago, IL
+    primary:  { host: "us-ord-10.linodeobjects.com", region: "us-ord-10" }, // Chicago, IL
     failover: { host: "us-lax-4.linodeobjects.com",  region: "us-lax-4" }, // Los Angeles, CA
   },
   C: {
