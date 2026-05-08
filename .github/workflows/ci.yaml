@@ -35,6 +35,7 @@ jobs:
 
       - name: Login to Fermyon Wasm Functions
         run: spin aka login --token ${{ secrets.AKA_FUNC_PAT }}
+
       - name: Deploy to Fermyon Wasm Functions
         run: >-
           spin aka deploy
