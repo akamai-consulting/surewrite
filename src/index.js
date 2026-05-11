@@ -203,8 +203,9 @@ async function handle(request) {
   // Auth is enforced above; the fileserver component is reached only via this handler.
   const parsedUrl = new URL(request.url);
   if (parsedUrl.pathname === "/docs" || parsedUrl.pathname.startsWith("/docs/")) {
-    const internalUrl = `http://docs.spin.internal${parsedUrl.pathname}${parsedUrl.search}`;
-    console.log(`[${rid}][docs] proxying to internal fileserver: ${parsedUrl.pathname}`);
+    const stripped = parsedUrl.pathname.replace(/^\/docs\/?/, "/") || "/";
+    const internalUrl = `http://docs.spin.internal${stripped}${parsedUrl.search}`;
+    console.log(`[${rid}][docs] proxying to internal fileserver: ${parsedUrl.pathname} -> ${stripped}`);
     return fetch(internalUrl);
   }
 
