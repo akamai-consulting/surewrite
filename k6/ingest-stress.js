@@ -48,43 +48,62 @@ const ALL_STATES = [
 // Selectable via PROFILE env var (default | low | high). Each profile has its own
 // stage ramp + VU sizing so we can sweep load levels without editing the file.
 const PROFILE = (__ENV.PROFILE || "default").toLowerCase();
+// HOLD overrides the peak-hold duration so we can let HPA-style horizontal
+// scaling reach steady state. Default 1m; bump to 5m+ when measuring scaled latency.
+const HOLD = __ENV.HOLD || "1m";
+
+// VU sizing assumes ~1s service time under load (observed p95 ~1.5s at 1k RPS),
+// not the unloaded 360ms baseline — VUs need to cover the whole request lifetime.
 const PROFILES = {
   low: {
-    desc: "75 RPS peak — confirm outbound-cap theory (150 outbound RPS demand)",
-    preAllocatedVUs: 50,
-    maxVUs: 300,
-    startRate: 25,
+    desc: "500 RPS peak (1,000 outbound RPS demand, ~111 RPS/bucket)",
+    preAllocatedVUs: 800,
+    maxVUs: 1500,
+    startRate: 125,
     stages: [
-      { duration: "1m", target: 25 },
-      { duration: "1m", target: 75 },
-      { duration: "1m", target: 75 },
-      { duration: "1m", target: 25 },
+      { duration: "1m", target: 125 },
+      { duration: "1m", target: 500 },
+      { duration: HOLD, target: 500 },
+      { duration: "1m", target: 125 },
+      { duration: "1m", target: 0 },
+    ],
+  },
+  mid: {
+    desc: "1,000 RPS peak (2,000 outbound RPS demand, ~222 RPS/bucket)",
+    preAllocatedVUs: 1500,
+    maxVUs: 3000,
+    startRate: 250,
+    stages: [
+      { duration: "1m", target: 250 },
+      { duration: "1m", target: 1000 },
+      { duration: HOLD, target: 1000 },
+      { duration: "1m", target: 250 },
       { duration: "1m", target: 0 },
     ],
   },
   default: {
-    desc: "250 RPS peak — baseline (500 outbound RPS demand, ~167 RPS/bucket)",
-    preAllocatedVUs: 200,
-    maxVUs: 1000,
-    startRate: 100,
+    desc: "2,000 RPS peak (4,000 outbound RPS demand, ~444 RPS/bucket)",
+    preAllocatedVUs: 2500,
+    maxVUs: 5000,
+    startRate: 500,
     stages: [
-      { duration: "1m", target: 100 },
-      { duration: "1m", target: 250 },
-      { duration: "1m", target: 250 },
-      { duration: "1m", target: 100 },
+      { duration: "1m", target: 500 },
+      { duration: "1m", target: 2000 },
+      { duration: HOLD, target: 2000 },
+      { duration: "1m", target: 500 },
       { duration: "1m", target: 0 },
     ],
   },
   high: {
-    desc: "400 RPS peak — push past saturation (800 outbound RPS demand)",
-    preAllocatedVUs: 400,
-    maxVUs: 2000,
-    startRate: 150,
+    desc: "3,000 RPS peak (6,000 outbound RPS demand, ~667 RPS/bucket)",
+    preAllocatedVUs: 4000,
+    maxVUs: 8000,
+    startRate: 750,
     stages: [
-      { duration: "1m", target: 150 },
-      { duration: "1m", target: 400 },
-      { duration: "1m", target: 400 },
-      { duration: "1m", target: 150 },
+      { duration: "1m", target: 750 },
+      { duration: "1m", target: 3000 },
+      { duration: HOLD, target: 3000 },
+      { duration: "1m", target: 750 },
       { duration: "1m", target: 0 },
     ],
   },
@@ -93,7 +112,7 @@ if (!PROFILES[PROFILE]) {
   throw new Error(`Unknown PROFILE='${PROFILE}'. Use one of: ${Object.keys(PROFILES).join(", ")}`);
 }
 const ACTIVE_PROFILE = PROFILES[PROFILE];
-console.log(`[profile=${PROFILE}] ${ACTIVE_PROFILE.desc}`);
+console.log(`[profile=${PROFILE} hold=${HOLD}] ${ACTIVE_PROFILE.desc}`);
 
 // ─── Test Stages ────────────────────────────────────────────────────
 export const options = {
@@ -306,4 +325,12 @@ export function handleSummary(data) {
   return {
     stdout: JSON.stringify(data, null, 2),
   };
+}
+
+// k6's JS runtime can't shell out, so cleanup lives in a sibling script.
+// Print the invocation reminder right after the run so the operator sees it.
+export function teardown() {
+  console.log("");
+  console.log("To delete test data from all 9 SureWrite buckets, run:");
+  console.log("  bash k6/cleanup-buckets.sh");
 }

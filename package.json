@@ -6,6 +6,9 @@
   "scripts": {
     "build": "node build.mjs && mkdirp dist && j2w -i build/bundle.js --initLocation http://sure-write.localhost -o dist/sure-write.wasm",
     "build:debug": "node build.mjs && mkdirp dist && j2w -d -i build/bundle.js --initLocation http://sure-write.localhost -o dist/sure-write.wasm",
+    "k6:test": "k6 run -e PROFILE=${PROFILE:-default} -e HOLD=${HOLD:-1m} -e INGEST_TOKEN=$INGEST_TOKEN k6/ingest-stress.js",
+    "k6:clean": "bash k6/cleanup-buckets.sh",
+    "k6:test-clean": "k6 run -e PROFILE=${PROFILE:-default} -e HOLD=${HOLD:-1m} -e INGEST_TOKEN=$INGEST_TOKEN k6/ingest-stress.js && bash k6/cleanup-buckets.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
