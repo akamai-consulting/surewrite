@@ -11,6 +11,19 @@ const dualWriteMs  = new Trend("dual_write_duration_ms");
 const http4xxRate  = new Rate("http_4xx_errors");
 const http5xxRate  = new Rate("http_5xx_errors");
 
+// Failure-body fingerprinting — partition every failure into a category so we can
+// tell function-origin errors apart from CDN-origin errors in the summary.
+const failEmpty        = new Counter("fail_empty_body");
+const failDualWrite    = new Counter("fail_dual_write");      // function returned its dual-write 502
+const failOriginFetch  = new Counter("fail_origin_fetch");    // function origin-fetch 502
+const failUnauthorized = new Counter("fail_unauthorized");    // function 401
+const failRejected     = new Counter("fail_rejected");        // function 4xx (path/method/payload)
+const failCdnHtml      = new Counter("fail_cdn_html");        // looks like an Akamai/CDN HTML error page
+const failJsonOther    = new Counter("fail_json_other");
+const failOther        = new Counter("fail_other");
+
+const FAILURE_SAMPLE_RATE = 0.01; // log full body for ~1% of failures across the whole run
+
 // ─── Configuration ──────────────────────────────────────────────────
 const BASE_URL   = __ENV.INGEST_URL || "https://brazil-poc-ingest.akamaized.net";
 const TOKEN_QS   = __ENV.INGEST_TOKEN || "";  // __token__ query string for CDN routing
@@ -31,22 +44,67 @@ const ALL_STATES = [
   ...SHARD_STATES.C,
 ];
 
+// ─── Load Profiles ──────────────────────────────────────────────────
+// Selectable via PROFILE env var (default | low | high). Each profile has its own
+// stage ramp + VU sizing so we can sweep load levels without editing the file.
+const PROFILE = (__ENV.PROFILE || "default").toLowerCase();
+const PROFILES = {
+  low: {
+    desc: "75 RPS peak — confirm outbound-cap theory (150 outbound RPS demand)",
+    preAllocatedVUs: 50,
+    maxVUs: 300,
+    startRate: 25,
+    stages: [
+      { duration: "1m", target: 25 },
+      { duration: "1m", target: 75 },
+      { duration: "1m", target: 75 },
+      { duration: "1m", target: 25 },
+      { duration: "1m", target: 0 },
+    ],
+  },
+  default: {
+    desc: "250 RPS peak — baseline (500 outbound RPS demand, ~167 RPS/bucket)",
+    preAllocatedVUs: 200,
+    maxVUs: 1000,
+    startRate: 100,
+    stages: [
+      { duration: "1m", target: 100 },
+      { duration: "1m", target: 250 },
+      { duration: "1m", target: 250 },
+      { duration: "1m", target: 100 },
+      { duration: "1m", target: 0 },
+    ],
+  },
+  high: {
+    desc: "400 RPS peak — push past saturation (800 outbound RPS demand)",
+    preAllocatedVUs: 400,
+    maxVUs: 2000,
+    startRate: 150,
+    stages: [
+      { duration: "1m", target: 150 },
+      { duration: "1m", target: 400 },
+      { duration: "1m", target: 400 },
+      { duration: "1m", target: 150 },
+      { duration: "1m", target: 0 },
+    ],
+  },
+};
+if (!PROFILES[PROFILE]) {
+  throw new Error(`Unknown PROFILE='${PROFILE}'. Use one of: ${Object.keys(PROFILES).join(", ")}`);
+}
+const ACTIVE_PROFILE = PROFILES[PROFILE];
+console.log(`[profile=${PROFILE}] ${ACTIVE_PROFILE.desc}`);
+
 // ─── Test Stages ────────────────────────────────────────────────────
 export const options = {
   scenarios: {
     ingest_stress: {
       executor: "ramping-arrival-rate",
-      startRate: 100,
+      startRate: ACTIVE_PROFILE.startRate,
       timeUnit: "1s",
-      preAllocatedVUs: 200,
-      maxVUs: 1000,
-      stages: [
-        { duration: "1m",  target: 100 },  // hold 100 RPS — warm up
-        { duration: "1m",  target: 250 },  // ramp to 250 RPS
-        { duration: "1m",  target: 250 },  // hold 500 RPS — ~167 RPS/bucket (limit: 2 000 RPS/bucket × 3 buckets = 6 000 RPS; failures here indicate upstream bottleneck)
-        { duration: "1m",  target: 100 },  // cool down
-        { duration: "1m",  target: 0 },    // drain
-      ],
+      preAllocatedVUs: ACTIVE_PROFILE.preAllocatedVUs,
+      maxVUs: ACTIVE_PROFILE.maxVUs,
+      stages: ACTIVE_PROFILE.stages,
     },
   },
   thresholds: {
@@ -78,6 +136,24 @@ function shardForState(uf) {
     if (states.includes(uf)) return shard;
   }
   return "A"; // default
+}
+
+function classifyFailure(res) {
+  const body = res.body == null ? "" : String(res.body);
+  if (body.length === 0) { failEmpty.add(1); return "empty"; }
+  if (body.includes("Both writes failed"))   { failDualWrite.add(1);    return "dual_write"; }
+  if (body.includes("origin fetch failed") ||
+      body.includes("origin responded HTTP")) { failOriginFetch.add(1); return "origin_fetch"; }
+  if (body === "Unauthorized")               { failUnauthorized.add(1); return "unauthorized"; }
+  if (body.startsWith("Forbidden") ||
+      body.startsWith("Method Not Allowed") ||
+      body.startsWith("Payload Too Large") ||
+      body.startsWith("Empty body") ||
+      body.startsWith("Bad Request"))        { failRejected.add(1);     return "rejected"; }
+  if (body.trimStart().startsWith("<"))      { failCdnHtml.add(1);      return "cdn_html"; }
+  try { JSON.parse(body); failJsonOther.add(1); return "json_other"; } catch {}
+  failOther.add(1);
+  return "other";
 }
 
 /**
@@ -160,9 +236,16 @@ export default function () {
     },
   });
 
-  // Log first 3 failures per VU with timestamp to correlate errors against ramp stage
-  if (!success && __ITER < 3) {
-    console.log(`DEBUG VU=${__VU} ITER=${__ITER} t=${Math.round(new Date().getTime() / 1000)}s status=${res.status} body=${String(res.body).slice(0, 300)}`);
+  // Classify and tally every failure across the whole run, and sample ~1% with full body.
+  // Per-VU iter-based sampling missed everything past warm-up because high-load failures
+  // happen well after each VU's first few iterations.
+  if (!success) {
+    const cls = classifyFailure(res);
+    if (Math.random() < FAILURE_SAMPLE_RATE) {
+      const body = String(res.body || "").slice(0, 500).replace(/\s+/g, " ");
+      const ts = Math.round(Date.now() / 1000);
+      console.log(`FAIL VU=${__VU} ITER=${__ITER} t=${ts}s status=${res.status} class=${cls} body="${body}"`);
+    }
   }
 
   // Track HTTP error category distribution to distinguish 4xx (rate-limit/auth) from 5xx (overload)
@@ -186,7 +269,10 @@ export function handleSummary(data) {
   const http4xx = data.metrics.http_4xx_errors ? (data.metrics.http_4xx_errors.values.rate * 100).toFixed(1) : "0.0";
   const http5xx = data.metrics.http_5xx_errors ? (data.metrics.http_5xx_errors.values.rate * 100).toFixed(1) : "0.0";
 
-  console.log("\n═══ Shard Distribution ═══");
+  console.log(`\n═══ Profile ═══`);
+  console.log(`  ${PROFILE}: ${ACTIVE_PROFILE.desc}\n`);
+
+  console.log("═══ Shard Distribution ═══");
   console.log(`  Shard A: ${shardA} (${((shardA / total) * 100).toFixed(1)}%)`);
   console.log(`  Shard B: ${shardB} (${((shardB / total) * 100).toFixed(1)}%)`);
   console.log(`  Shard C: ${shardC} (${((shardC / total) * 100).toFixed(1)}%)`);
@@ -195,6 +281,27 @@ export function handleSummary(data) {
   console.log("═══ HTTP Error Breakdown ═══");
   console.log(`  4xx (rate-limit/auth): ${http4xx}%`);
   console.log(`  5xx (overload/fault):  ${http5xx}%\n`);
+
+  const failClasses = [
+    ["empty body          (no response body)",                "fail_empty_body"],
+    ["dual_write          (function 502 — both S3 PUTs failed)", "fail_dual_write"],
+    ["origin_fetch        (function 502 — origin pull failed)",  "fail_origin_fetch"],
+    ["unauthorized        (function 401)",                    "fail_unauthorized"],
+    ["rejected            (function 4xx — path/method/size)", "fail_rejected"],
+    ["cdn_html            (CDN/edge HTML error page)",        "fail_cdn_html"],
+    ["json_other          (other JSON body)",                 "fail_json_other"],
+    ["other               (non-JSON, non-HTML, unknown)",     "fail_other"],
+  ];
+  const totalFails = failClasses.reduce((sum, [, k]) =>
+    sum + (data.metrics[k] ? data.metrics[k].values.count : 0), 0);
+  console.log(`═══ Failure Body Classification (${totalFails} total) ═══`);
+  for (const [label, key] of failClasses) {
+    const c = data.metrics[key] ? data.metrics[key].values.count : 0;
+    if (c === 0) continue;
+    const pct = totalFails > 0 ? ((c / totalFails) * 100).toFixed(1) : "0.0";
+    console.log(`  ${label}: ${c} (${pct}%)`);
+  }
+  console.log("");
 
   return {
     stdout: JSON.stringify(data, null, 2),
