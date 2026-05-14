@@ -109,34 +109,56 @@ function jitteredDelay() {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Classify a thrown fetch error to make stress-test logs greppable
+// (timeout vs network reset vs DNS vs other) — these have different root causes
+// at the edge runtime / outbound pool layer.
+function classifyFetchError(err) {
+  const name = err && err.name ? String(err.name) : "";
+  const msg = err && err.message ? String(err.message) : String(err);
+  if (name === "TimeoutError" || /timeout/i.test(msg)) return "timeout";
+  if (name === "AbortError") return "abort";
+  if (/NetworkError|network error|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(msg)) return "network";
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(msg)) return "dns";
+  if (/ETIMEDOUT/i.test(msg)) return "conn_timeout";
+  return "other";
+}
+
 /**
  * Wrap a fetch so it resolves with a tagged result object instead of rejecting.
  * A non-2xx response is treated as a failure (ok: false).
  * Retries once with a randomized delay on failure or timeout.
  */
-async function taggedFetch(rid, label, makeFetch) {
+async function taggedFetch(rid, label, target, makeFetch) {
+  let lastResult;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const start = Date.now();
     try {
       const res = await makeFetch();
+      const dur = Date.now() - start;
       if (res.ok) {
-        console.log(`[${rid}][dualWrite] ${label} succeeded HTTP ${res.status} (attempt ${attempt})`);
-        return { ok: true, label, status: res.status };
+        console.log(`[${rid}][dualWrite] ${label} OK status=${res.status} dur=${dur}ms host=${target.hostname} attempt=${attempt}`);
+        return { ok: true, label, status: res.status, durationMs: dur, host: target.hostname };
       }
-      console.error(`[${rid}][dualWrite] ${label} failed HTTP ${res.status} (attempt ${attempt})`);
-      if (attempt < 2) {
-        await jitteredDelay();
-        continue;
+      // S3 returns useful diagnostic XML on errors (SlowDown, ServiceUnavailable, etc.) — capture a snippet.
+      let bodySnippet = "";
+      try {
+        bodySnippet = (await res.text()).slice(0, 300).replace(/\s+/g, " ");
+      } catch (bodyErr) {
+        bodySnippet = `<body read failed: ${bodyErr}>`;
       }
-      return { ok: false, label, status: res.status };
+      console.error(`[${rid}][dualWrite] ${label} HTTP_FAIL status=${res.status} dur=${dur}ms host=${target.hostname} region=${target.region} attempt=${attempt} body="${bodySnippet}"`);
+      lastResult = { ok: false, label, status: res.status, durationMs: dur, host: target.hostname, body: bodySnippet };
     } catch (err) {
-      console.error(`[${rid}][dualWrite] ${label} rejected: ${err} (attempt ${attempt})`);
-      if (attempt < 2) {
-        await jitteredDelay();
-        continue;
-      }
-      return { ok: false, label, error: String(err) };
+      const dur = Date.now() - start;
+      const category = classifyFetchError(err);
+      console.error(`[${rid}][dualWrite] ${label} REJECTED category=${category} err="${err}" dur=${dur}ms host=${target.hostname} region=${target.region} attempt=${attempt}`);
+      lastResult = { ok: false, label, error: String(err), errorCategory: category, durationMs: dur, host: target.hostname };
+    }
+    if (attempt < 2) {
+      await jitteredDelay();
     }
   }
+  return lastResult;
 }
 
 /**
@@ -147,28 +169,55 @@ async function taggedFetch(rid, label, makeFetch) {
 async function dualWrite(rid, shard, bucketIndex, objectPath, body) {
   const { primary, failover } = SHARDS[shard];
   const credentials = getCredentials();
+  const dualStart = Date.now();
 
-  console.log(`[${rid}][dualWrite] shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex}`);
-  console.log(`[${rid}][dualWrite] primary=${primary.host} failover=${failover.host}`);
+  const primaryHostname = `${BUCKET_PREFIX}-${bucketIndex}.${primary.host}`;
+  const failoverHostname = `${BUCKET_PREFIX}-${bucketIndex}.${failover.host}`;
+
+  console.log(`[${rid}][dualWrite] start shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} primary=${primaryHostname} failover=${failoverHostname}`);
 
   const [primaryResult, failoverResult] = await Promise.all([
     taggedFetch(
       rid,
       "primary",
+      { hostname: primaryHostname, region: primary.region },
       () => signedPut(primary.host, primary.region, bucketIndex, objectPath, body, credentials)
     ),
     taggedFetch(
       rid,
       "failover",
+      { hostname: failoverHostname, region: failover.region },
       () => signedPut(failover.host, failover.region, bucketIndex, objectPath, body, credentials)
     ),
   ]);
 
+  const dualDur = Date.now() - dualStart;
+
   if (!primaryResult.ok && !failoverResult.ok) {
+    const pDetail = primaryResult.error
+      ? `${primaryResult.errorCategory}:${primaryResult.error}`
+      : `HTTP ${primaryResult.status} body="${primaryResult.body || ""}"`;
+    const fDetail = failoverResult.error
+      ? `${failoverResult.errorCategory}:${failoverResult.error}`
+      : `HTTP ${failoverResult.status} body="${failoverResult.body || ""}"`;
+    console.error(
+      `[${rid}][dualWrite] BOTH_FAILED shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} totalDur=${dualDur}ms ` +
+      `primary={host=${primaryHostname} dur=${primaryResult.durationMs}ms ${pDetail}} ` +
+      `failover={host=${failoverHostname} dur=${failoverResult.durationMs}ms ${fDetail}}`
+    );
     return {
       ok: false,
       message: `Both writes failed — primary: ${primaryResult.error || `HTTP ${primaryResult.status}`}, failover: ${failoverResult.error || `HTTP ${failoverResult.status}`}`,
     };
+  }
+
+  if (!primaryResult.ok || !failoverResult.ok) {
+    const failed = !primaryResult.ok ? primaryResult : failoverResult;
+    console.error(
+      `[${rid}][dualWrite] PARTIAL shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} totalDur=${dualDur}ms ` +
+      `failed=${failed.label} host=${failed.host} dur=${failed.durationMs}ms ` +
+      (failed.error ? `category=${failed.errorCategory} err="${failed.error}"` : `status=${failed.status} body="${failed.body || ""}"`)
+    );
   }
 
   return {
