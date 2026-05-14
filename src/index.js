@@ -162,101 +162,38 @@ async function taggedFetch(rid, label, target, makeFetch) {
 }
 
 /**
- * Async failover write — executes after primary has succeeded and the customer
- * response has been returned. Emits SCHEDULED/STARTED/COMPLETED log lines so we
- * can verify event.waitUntil() actually keeps the function alive long enough
- * for the replication fetch to complete.
+ * Tolerant Dual-Write: PUT to primary and failover in parallel.
+ * Awaits both writes to ensure replication completes before the function exits.
+ * Returns 200 if at least one succeeds.
  */
-async function asyncFailover(rid, target, bucketIndex, objectPath, body, credentials) {
-  const scheduledAt = Date.now();
-  console.log(`[${rid}][failover-async] SCHEDULED host=${target.hostname} t=${scheduledAt}`);
-  await Promise.resolve();
-  const startedAt = Date.now();
-  console.log(`[${rid}][failover-async] STARTED host=${target.hostname} delaySinceSchedule=${startedAt - scheduledAt}ms`);
-
-  const result = await taggedFetch(
-    rid,
-    "failover-async",
-    target,
-    () => signedPut(target.host, target.region, bucketIndex, objectPath, body, credentials)
-  );
-
-  const totalDur = Date.now() - scheduledAt;
-  if (result.ok) {
-    console.log(`[${rid}][failover-async] COMPLETED ok host=${target.hostname} totalDur=${totalDur}ms fetchDur=${result.durationMs}ms`);
-  } else {
-    const detail = result.error
-      ? `category=${result.errorCategory} err="${result.error}"`
-      : `status=${result.status} body="${result.body || ""}"`;
-    console.error(`[${rid}][failover-async] COMPLETED FAILED host=${target.hostname} totalDur=${totalDur}ms fetchDur=${result.durationMs}ms ${detail}`);
-  }
-  return result;
-}
-
-/**
- * Tolerant write with async failover replication.
- *  - Primary written synchronously.
- *  - On primary success: failover scheduled via event.waitUntil(), respond 200.
- *  - On primary failure: failover attempted synchronously as fallback.
- *  - Customer never sees a 502 unless BOTH legs failed.
- */
-async function tolerantWrite(rid, event, shard, bucketIndex, objectPath, body) {
+async function dualWrite(rid, shard, bucketIndex, objectPath, body) {
   const { primary, failover } = SHARDS[shard];
   const credentials = getCredentials();
-  const startedAt = Date.now();
+  const dualStart = Date.now();
 
-  const primaryTarget  = { host: primary.host,  region: primary.region,  hostname: `${BUCKET_PREFIX}-${bucketIndex}.${primary.host}` };
-  const failoverTarget = { host: failover.host, region: failover.region, hostname: `${BUCKET_PREFIX}-${bucketIndex}.${failover.host}` };
+  const primaryHostname = `${BUCKET_PREFIX}-${bucketIndex}.${primary.host}`;
+  const failoverHostname = `${BUCKET_PREFIX}-${bucketIndex}.${failover.host}`;
 
-  console.log(`[${rid}][write] start shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} primary=${primaryTarget.hostname} failover=${failoverTarget.hostname}`);
+  console.log(`[${rid}][dualWrite] start shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} primary=${primaryHostname} failover=${failoverHostname}`);
 
-  const primaryResult = await taggedFetch(
-    rid,
-    "primary",
-    primaryTarget,
-    () => signedPut(primaryTarget.host, primaryTarget.region, bucketIndex, objectPath, body, credentials)
-  );
+  const [primaryResult, failoverResult] = await Promise.all([
+    taggedFetch(
+      rid,
+      "primary",
+      { hostname: primaryHostname, region: primary.region },
+      () => signedPut(primary.host, primary.region, bucketIndex, objectPath, body, credentials)
+    ),
+    taggedFetch(
+      rid,
+      "failover",
+      { hostname: failoverHostname, region: failover.region },
+      () => signedPut(failover.host, failover.region, bucketIndex, objectPath, body, credentials)
+    ),
+  ]);
 
-  if (primaryResult.ok) {
-    const failoverPromise = asyncFailover(rid, failoverTarget, bucketIndex, objectPath, body, credentials);
+  const dualDur = Date.now() - dualStart;
 
-    let mode;
-    if (event && typeof event.waitUntil === "function") {
-      try {
-        event.waitUntil(failoverPromise);
-        mode = "waitUntil";
-        console.log(`[${rid}][write] failover handed to event.waitUntil — response returning now`);
-      } catch (err) {
-        console.error(`[${rid}][write] event.waitUntil threw: ${err} — awaiting failover synchronously`);
-        await failoverPromise;
-        mode = "sync-fallback-after-throw";
-      }
-    } else {
-      console.warn(`[${rid}][write] event.waitUntil unavailable — awaiting failover synchronously`);
-      await failoverPromise;
-      mode = "sync-fallback-no-waitUntil";
-    }
-
-    return {
-      ok: true,
-      primaryOk: true,
-      failoverOk: mode === "waitUntil" ? "scheduled" : true,
-      failoverMode: mode,
-      totalDur: Date.now() - startedAt,
-    };
-  }
-
-  console.error(`[${rid}][write] primary FAILED — attempting failover synchronously host=${failoverTarget.hostname}`);
-  const failoverResult = await taggedFetch(
-    rid,
-    "failover",
-    failoverTarget,
-    () => signedPut(failoverTarget.host, failoverTarget.region, bucketIndex, objectPath, body, credentials)
-  );
-
-  const totalDur = Date.now() - startedAt;
-
-  if (!failoverResult.ok) {
+  if (!primaryResult.ok && !failoverResult.ok) {
     const pDetail = primaryResult.error
       ? `${primaryResult.errorCategory}:${primaryResult.error}`
       : `HTTP ${primaryResult.status} body="${primaryResult.body || ""}"`;
@@ -264,9 +201,9 @@ async function tolerantWrite(rid, event, shard, bucketIndex, objectPath, body) {
       ? `${failoverResult.errorCategory}:${failoverResult.error}`
       : `HTTP ${failoverResult.status} body="${failoverResult.body || ""}"`;
     console.error(
-      `[${rid}][write] BOTH_FAILED shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} totalDur=${totalDur}ms ` +
-      `primary={host=${primaryTarget.hostname} dur=${primaryResult.durationMs}ms ${pDetail}} ` +
-      `failover={host=${failoverTarget.hostname} dur=${failoverResult.durationMs}ms ${fDetail}}`
+      `[${rid}][dualWrite] BOTH_FAILED shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} totalDur=${dualDur}ms ` +
+      `primary={host=${primaryHostname} dur=${primaryResult.durationMs}ms ${pDetail}} ` +
+      `failover={host=${failoverHostname} dur=${failoverResult.durationMs}ms ${fDetail}}`
     );
     return {
       ok: false,
@@ -274,21 +211,26 @@ async function tolerantWrite(rid, event, shard, bucketIndex, objectPath, body) {
     };
   }
 
-  console.log(`[${rid}][write] RECOVERED primary failed, failover ok totalDur=${totalDur}ms`);
+  if (!primaryResult.ok || !failoverResult.ok) {
+    const failed = !primaryResult.ok ? primaryResult : failoverResult;
+    console.error(
+      `[${rid}][dualWrite] PARTIAL shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} totalDur=${dualDur}ms ` +
+      `failed=${failed.label} host=${failed.host} dur=${failed.durationMs}ms ` +
+      (failed.error ? `category=${failed.errorCategory} err="${failed.error}"` : `status=${failed.status} body="${failed.body || ""}"`)
+    );
+  }
+
   return {
     ok: true,
-    primaryOk: false,
-    failoverOk: true,
-    failoverMode: "sync-after-primary-fail",
-    totalDur,
+    primaryOk: primaryResult.ok,
+    failoverOk: failoverResult.ok,
   };
 }
 
 /**
  * Main request handler.
  */
-async function handle(event) {
-  const request = event.request;
+async function handle(request) {
   const rid = generateRequestId();
   console.log(`[${rid}][handle] ${request.method} ${request.url}`);
 
@@ -383,18 +325,18 @@ async function handle(event) {
     }
   }
 
-  // 4. Tolerant write — primary sync, failover async via event.waitUntil()
-  const result = await tolerantWrite(rid, event, shardKey, bucketIndex, cleanPath, objectBody);
+  // 4. Tolerant dual-write
+  const result = await dualWrite(rid, shardKey, bucketIndex, cleanPath, objectBody);
 
   if (!result.ok) {
-    console.error(`[${rid}][handle] write FAILED: ${result.message}`);
+    console.error(`[${rid}][handle] dual-write FAILED: ${result.message}`);
     return new Response(JSON.stringify({ error: result.message }), {
       status: 502,
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  console.log(`[${rid}][handle] write OK primary=${result.primaryOk} failover=${result.failoverOk} mode=${result.failoverMode} totalDur=${result.totalDur}ms`);
+  console.log(`[${rid}][handle] dual-write OK primary=${result.primaryOk} failover=${result.failoverOk}`);
 
   return new Response(
     JSON.stringify({
@@ -404,7 +346,6 @@ async function handle(event) {
       bucket: `${BUCKET_PREFIX}-${bucketIndex}`,
       primary_written: result.primaryOk,
       failover_written: result.failoverOk,
-      failover_mode: result.failoverMode,
     }),
     {
       status: 200,
@@ -414,5 +355,5 @@ async function handle(event) {
 }
 
 addEventListener("fetch", (event) => {
-  event.respondWith(handle(event));
+  event.respondWith(handle(event.request));
 });
