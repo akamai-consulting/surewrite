@@ -25,7 +25,7 @@ const failOther        = new Counter("fail_other");
 const FAILURE_SAMPLE_RATE = 0.01; // log full body for ~1% of failures across the whole run
 
 // ─── Configuration ──────────────────────────────────────────────────
-const BASE_URL   = __ENV.INGEST_URL || "https://brazil-poc-ingest.akamaized.net";
+const BASE_URL   = __ENV.INGEST_URL || "https://brazil-poc-ingest.akamaized-staging.net";
 const TOKEN_QS   = __ENV.INGEST_TOKEN || "";  // __token__ query string for CDN routing
 
 if (!TOKEN_QS) {
@@ -83,8 +83,8 @@ const PROFILES = {
   },
   default: {
     desc: "2,000 RPS peak (4,000 outbound RPS demand, ~444 RPS/bucket)",
-    preAllocatedVUs: 2500,
-    maxVUs: 5000,
+    preAllocatedVUs: 500,
+    maxVUs: 2000,
     startRate: 500,
     stages: [
       { duration: "1m", target: 500 },
@@ -116,6 +116,15 @@ console.log(`[profile=${PROFILE} hold=${HOLD}] ${ACTIVE_PROFILE.desc}`);
 
 // ─── Test Stages ────────────────────────────────────────────────────
 export const options = {
+  // Round-robin across IPs returned by DNS. No-op when DNS returns a single IP;
+  // when multiple are returned (Akamai staging returns 2), spreads new connections
+  // across them. ttl=0 forces fresh resolution per connection so the roundRobin
+  // selector actually distributes instead of latching on the first result.
+  dns: {
+    ttl: "0",
+    select: "roundRobin",
+    policy: "preferIPv4",
+  },
   scenarios: {
     ingest_stress: {
       executor: "ramping-arrival-rate",
