@@ -19,7 +19,6 @@
     "mkdirp": "^3.0.1"
   },
   "dependencies": {
-    "@aws-crypto/sha256-js": "^5.2.0",
     "@smithy/signature-v4": "^5.3.14",
     "@spinframework/build-tools": "^1.0.4",
     "@spinframework/spin-variables": "^1.0.0",
