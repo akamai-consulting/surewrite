@@ -1,6 +1,6 @@
 
 import { jenkinsHash } from "./jenkins.js";
-import { signRequest } from "./signing.js";
+import { signRequest, hashBody } from "./signing.js";
 import { get as getVariable } from "@spinframework/spin-variables";
 import {
   POOL_SIZE,
@@ -87,10 +87,10 @@ function extractFilename(path) {
 /**
  * Execute a signed PUT to a Linode E3 bucket endpoint.
  */
-async function signedPut(host, region, bucketIndex, objectPath, body, credentials) {
+async function signedPut(host, region, bucketIndex, objectPath, body, credentials, payloadHash) {
   const hostname = `${BUCKET_PREFIX}-${bucketIndex}.${host}`;
   const signed = await signRequest(
-    { method: "PUT", hostname, path: objectPath, region, body },
+    { method: "PUT", hostname, path: objectPath, region, body, payloadHash },
     credentials
   );
   return fetch(signed.url, {
@@ -176,18 +176,21 @@ async function dualWrite(rid, shard, bucketIndex, objectPath, body) {
 
   console.log(`[${rid}][dualWrite] start shard=${shard} bucket=${BUCKET_PREFIX}-${bucketIndex} primary=${primaryHostname} failover=${failoverHostname}`);
 
+  // Pre-compute body hash once, reuse for both sign operations
+  const payloadHash = await hashBody(body);
+
   const [primaryResult, failoverResult] = await Promise.all([
     taggedFetch(
       rid,
       "primary",
       { hostname: primaryHostname, region: primary.region },
-      () => signedPut(primary.host, primary.region, bucketIndex, objectPath, body, credentials)
+      () => signedPut(primary.host, primary.region, bucketIndex, objectPath, body, credentials, payloadHash)
     ),
     taggedFetch(
       rid,
       "failover",
       { hostname: failoverHostname, region: failover.region },
-      () => signedPut(failover.host, failover.region, bucketIndex, objectPath, body, credentials)
+      () => signedPut(failover.host, failover.region, bucketIndex, objectPath, body, credentials, payloadHash)
     ),
   ]);
 
