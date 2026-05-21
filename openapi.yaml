@@ -10,8 +10,9 @@ info:
 
     ## Authentication
 
-    Every request must carry an **Akamai Token Auth 2.0** token. Tokens are
-    HMAC-SHA256–signed and have the following structure:
+    Every request must carry an **Akamai Token Auth 2.0** token in the
+    `X-SureWrite-TA` request header. Tokens are HMAC-SHA256–signed and have
+    the following structure:
 
     ```
     st=<unix_start>~exp=<unix_expiry>~acl=<url_acl>~hmac=<hex_signature>
@@ -24,8 +25,9 @@ info:
     | `acl` | URL ACL pattern (percent-encoded), e.g. `/oficial/*`. |
     | `hmac` | HMAC-SHA256 of the token fields, keyed with your shared secret. |
 
-    Tokens can be delivered as a query parameter (`?__token__=<token>`) or via
-    the `Akamai-Token` request header — confirm the method with your account team.
+    The CDN validates the header at the edge, strips it from the upstream
+    request, and forwards an `Authorization: Bearer <token>` header to the
+    Function. As a client you only ever send `X-SureWrite-TA`.
 
     **Python**
     ```python
@@ -33,7 +35,7 @@ info:
 
     ea = EdgeAuth(key="YOUR_SHARED_SECRET", algorithm="sha256", window_seconds=300)
     token = ea.generate_acl_token("/oficial/*")
-    # append ?__token__=<token> to the request URL
+    # send as header: X-SureWrite-TA: <token>
     ```
 
     **Node.js**
@@ -42,7 +44,7 @@ info:
 
     const ea = new AkamaiEdgeAuth({ key: "YOUR_SHARED_SECRET", windowSeconds: 300 });
     const token = ea.generateACLToken("/oficial/*");
-    // append ?__token__=<token> to the request URL
+    // send as header: X-SureWrite-TA: <token>
     ```
 
     Always generate tokens immediately before use — do not cache or reuse them.
@@ -270,10 +272,11 @@ components:
 
     Unauthorized:
       description: |
-        The `Authorization: Bearer` header was missing, malformed, or carried
-        an incorrect token. In normal operation, the CDN injects this header after
-        Token Auth 2.0 validation, so this error indicates a misconfigured CDN rule
-        or a direct (non-CDN) call without credentials.
+        The `X-SureWrite-TA` header was missing, malformed, or carried an
+        invalid/expired token. The CDN validates this header at the edge and
+        rejects unauthorized requests before they reach the Function — so this
+        error indicates either a bad token or a direct (non-CDN) call without
+        credentials.
       content:
         text/plain:
           schema:
@@ -334,7 +337,9 @@ components:
     TokenAuth20:
       type: apiKey
       description: |
-        **Akamai Token Auth 2.0** — validated at the CDN edge before requests reach SureWrite.
+        **Akamai Token Auth 2.0** — sent by the client in the `X-SureWrite-TA`
+        request header and validated at the CDN edge before requests reach
+        SureWrite.
 
         Tokens are HMAC-SHA256–signed and have the following structure:
 
@@ -349,11 +354,11 @@ components:
         | `acl` | URL ACL pattern (percent-encoded). Use `/oficial/*` to cover all ingest paths. |
         | `hmac` | HMAC-SHA256 of the token fields, keyed with the shared secret provisioned by your Akamai account team. |
 
-        **Delivery method** — negotiate with your Akamai account team:
-
-        - **Query parameter** (default): append `?__token__=<token>` to the request URL.
-          > **Note:** `hdnts` is the query parameter name used by the Akamai Streaming Token Auth implementation. For standard web delivery, the default is `__token__`. Confirm the correct name with your Akamai account team if you have customized the property configuration.
-        - **Request header**: set `Akamai-Token: <token>`.
+        **Delivery**: send the token as the value of the `X-SureWrite-TA`
+        request header on every request. The CDN validates the header at the
+        edge, removes it from the upstream request, and forwards an
+        `Authorization: Bearer <token>` header to the Function. The Function
+        validates the bearer token before processing the request.
 
         **Generating a token (Python)**:
 
@@ -366,13 +371,12 @@ components:
             window_seconds=300,       # token valid for 5 minutes
         )
         token = ea.generate_acl_token("/oficial/*")
-        # Append to the URL: ?__token__=<token>
+        # Send on the request: X-SureWrite-TA: <token>
         ```
 
         **Generating a token (Node.js)**:
 
         ```js
-        import EdgeGrid from "akamai-edgegrid";
         import { AkamaiEdgeAuth } from "@akamai/edgeauth";
 
         const ea = new AkamaiEdgeAuth({
@@ -380,13 +384,13 @@ components:
           windowSeconds: 300,
         });
         const token = ea.generateACLToken("/oficial/*");
-        // Append to the URL: ?__token__=<token>
+        // Send on the request: X-SureWrite-TA: <token>
         ```
 
         **Token lifecycle**: tokens must be generated immediately before use. Do **not** cache
         or reuse tokens across multiple requests; expiry is enforced to the second.
-      in: query
-      name: __token__
+      in: header
+      name: X-SureWrite-TA
 
 tags:
   - name: Ingest

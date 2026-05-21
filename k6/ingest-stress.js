@@ -25,10 +25,10 @@ const failOther        = new Counter("fail_other");
 const FAILURE_SAMPLE_RATE = 0.01; // log full body for ~1% of failures across the whole run
 
 // ─── Configuration ──────────────────────────────────────────────────
-const BASE_URL   = __ENV.INGEST_URL || "https://brazil-poc-ingest.akamaized-staging.net";
-const TOKEN_QS   = __ENV.INGEST_TOKEN || "";  // __token__ query string for CDN routing
+const BASE_URL   = __ENV.INGEST_URL || "https://brazil-poc-ingest.akamaized.net";
+const TOKEN      = __ENV.INGEST_TOKEN || "";  // sent as X-SureWrite-TA header
 
-if (!TOKEN_QS) {
+if (!TOKEN) {
   throw new Error("INGEST_TOKEN environment variable is required");
 }
 
@@ -83,8 +83,8 @@ const PROFILES = {
   },
   default: {
     desc: "2,000 RPS peak (4,000 outbound RPS demand, ~444 RPS/bucket)",
-    preAllocatedVUs: 500,
-    maxVUs: 2000,
+    preAllocatedVUs: 3000,
+    maxVUs: 5000,
     startRate: 500,
     stages: [
       { duration: "1m", target: 500 },
@@ -224,12 +224,12 @@ export default function () {
   const payload = generatePayload(uf, filename);
   const shard = shardForState(uf);
 
-  const queryString = TOKEN_QS ? `?__token__=${TOKEN_QS}` : "";
-  const url = `${BASE_URL}${objectPath}${queryString}`;
+  const url = `${BASE_URL}${objectPath}`;
 
   const params = {
     headers: {
       "Content-Type": "application/json",
+      "X-SureWrite-TA": TOKEN,
     },
     tags: { name: "POST /oficial/ele2026/620/dados/{uf}/{file}.json", shard },
   };
